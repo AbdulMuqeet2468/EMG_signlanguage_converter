@@ -60,5 +60,5 @@ with open(FILE_NAME, "w", newline="") as f:
                 except:
                     pass
 
-print("\n✅ Done!")
-print(f"📁 Saved as: {FILE_NAME}")
+print("\nDone!")
+print(f"Saved as: {FILE_NAME}")
