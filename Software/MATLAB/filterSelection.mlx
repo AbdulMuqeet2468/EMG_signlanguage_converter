@@ -1,0 +1,187 @@
+%   Make sure part_emgData.csv file is in the directory
+% Team members: 183,184,185
+
+clc; clear; close all;
+
+% ---------------- Load data ----------------
+T = readtable('part_emgData.csv');
+
+% Convert to numeric array for robust indexing
+A = table2array(T);
+
+% According to the dataset, first column is time and rest columns are EMG
+% signals, but if a data doesn't have proper labelling these lines will
+% help to determine EMG signals
+if size(A,2) >= 2 && all(diff(A(:,1)) >= 0)
+    emg_col = 2; % time in col 1, EMG in col 2
+else
+    emg_col = 1; % fallback: first column is EMG
+end
+
+signal_raw = double(A(:, emg_col));
+N = length(signal_raw);
+
+% Sampling frequency (given by MYO band)
+fs = 200;
+
+t = (0:N-1)/fs;
+
+% ---------------- Preprocessing chain ----------------
+% Raw (as read)
+raw = signal_raw;
+
+% DC removal
+dc_removed = raw - mean(raw);
+
+% Notch filter (50 Hz - India)
+wo = 50/(fs/2);
+bw = wo/35;
+[b_notch, a_notch] = iirnotch(wo, bw);
+after_notch = filtfilt(b_notch, a_notch, dc_removed);
+
+% Bandpass parameters
+low_cut = 20; high_cut = 90;
+Wn = [low_cut high_cut]/(fs/2);
+order = 4;
+
+% Design three filters
+% Butterworth
+[b_butt, a_butt] = butter(order, Wn, 'bandpass');
+% Chebyshev I (0.5 dB ripple)
+[b_ch1, a_ch1] = cheby1(order, 0.5, Wn, 'bandpass');
+% Chebyshev II (40 dB stopband atten)
+[b_ch2, a_ch2] = cheby2(order, 40, Wn, 'bandpass');
+
+% Apply zero-phase filtering (on signal after notch)
+sig_butt = filtfilt(b_butt, a_butt, after_notch);
+sig_ch1  = filtfilt(b_ch1,  a_ch1,  after_notch);
+sig_ch2  = filtfilt(b_ch2,  a_ch2,  after_notch);
+
+% Final "processed" chosen as Chebyshev II + smoothing (good flat passband)
+sm_win = round(0.1*fs);  % 0.1 s window
+processed = smoothdata(sig_ch2, 'movmean', sm_win);
+
+% Also prepare smoothed versions for time-comparison if desired
+sig_butt_s = smoothdata(sig_butt, 'movmean', sm_win);
+sig_ch1_s  = smoothdata(sig_ch1,  'movmean', sm_win);
+sig_ch2_s  = smoothdata(sig_ch2,  'movmean', sm_win);
+
+% ---------------- Frequency preparations ----------------
+nfft = 2^nextpow2(N);
+f = (0:nfft/2-1)*(fs/nfft);  % one-sided frequency vector
+
+% FFT single-sided magnitude (normalized)
+FFT_dc = abs(fft(dc_removed, nfft)/N);
+FFT_notch = abs(fft(after_notch, nfft)/N);
+FFT_butt = abs(fft(sig_butt, nfft)/N);
+FFT_ch1  = abs(fft(sig_ch1, nfft)/N);
+FFT_ch2  = abs(fft(sig_ch2, nfft)/N);
+
+% Keep one-sided
+FFT_dc = FFT_dc(1:nfft/2);
+FFT_notch = FFT_notch(1:nfft/2);
+FFT_butt = FFT_butt(1:nfft/2);
+FFT_ch1 = FFT_ch1(1:nfft/2);
+FFT_ch2 = FFT_ch2(1:nfft/2);
+
+% Normalize for plotting comparisons
+FFT_dc_n = FFT_dc / max(FFT_dc);
+FFT_notch_n = FFT_notch / max(FFT_dc); % normalize relative to raw
+FFT_butt_n = FFT_butt / max([FFT_butt;1e-12]);
+FFT_ch1_n  = FFT_ch1  / max([FFT_ch1;1e-12]);
+FFT_ch2_n  = FFT_ch2  / max([FFT_ch2;1e-12]);
+
+% ---------------- PLOTS ----------------
+
+% 1) Raw EMG and Processed EMG (time domain)
+figure('Name','Raw vs Processed (time)','NumberTitle','off','Position',[100 100 900 600]);
+subplot(2,1,1);
+plot(t, raw); ylim(autoaxis(raw)); xlabel('Time (s)'); ylabel('Amplitude'); title('Raw EMG (as-read)');
+grid on;
+subplot(2,1,2);
+plot(t, processed); xlabel('Time (s)'); ylabel('Amplitude'); title('Processed EMG (Notch -> Cheby2 -> Smooth)'); grid on;
+sgtitle('Raw and Processed EMG');
+
+% 2) Notch filter FT comparison (show the 50 Hz region)
+figure('Name','Notch FT Comparison','NumberTitle','off','Position',[1050 100 800 400]);
+plot(f, FFT_dc_n, 'g', 'DisplayName', 'Before Notch (DC removed)'); hold on;
+plot(f, FFT_notch_n, 'b', 'DisplayName', 'After Notch');
+xlim([0 100]); xlabel('Frequency (Hz)'); ylabel('Normalized Magnitude');
+title('Effect of 50 Hz Notch Filter (FFT)');
+legend('Location','northeast'); grid on;
+% Emphasize 50 Hz line
+yl = ylim;
+plot([50 50], yl, '--r','HandleVisibility','off');
+
+% 3) Comparing three filters - Time domain (overlay & smoothed)
+figure('Name','Three Filters - Time Domain','NumberTitle','off','Position',[100 750 900 400]);
+plot(t, sig_butt_s, 'r', 'DisplayName','Butterworth (smoothed)'); hold on;
+plot(t, sig_ch1_s, 'g', 'DisplayName','Chebyshev I (smoothed)');
+plot(t, sig_ch2_s, 'b', 'DisplayName','Chebyshev II (smoothed)');
+xlim([0 2]); % zoom first 2 seconds for clarity
+xlabel('Time (s)'); ylabel('Amplitude'); title('Bandpass Outputs (20-90 Hz) - Time Domain'); legend;
+grid on;
+
+% 4) Frequency domain: FTs of three filters
+figure('Name','Three Filters - Frequency Domain (FT)','NumberTitle','off','Position',[1050 550 800 400]);
+plot(f, FFT_butt./max(FFT_butt), 'r', 'DisplayName','Butterworth'); hold on;
+plot(f, FFT_ch1./max(FFT_ch1), 'g', 'DisplayName','Chebyshev I');
+plot(f, FFT_ch2./max(FFT_ch2), 'b', 'DisplayName','Chebyshev II');
+xlim([0 100]); xlabel('Frequency (Hz)'); ylabel('Normalized Magnitude');
+title('FFT Comparison of Filtered Signals (0-100 Hz)'); legend; grid on;
+% Mark the band edges
+plot([20 20], ylim, '--k','HandleVisibility','off'); plot([90 90], ylim, '--k','HandleVisibility','off');
+
+% 5) PSD Comparison (Welch)
+figure('Name','PSD Comparison (Welch)','NumberTitle','off','Position',[100 350 900 400]);
+[Px_butt,Fb] = pwelch(sig_butt, hamming(256), 128, 1024, fs);
+[Px_ch1,~] = pwelch(sig_ch1, hamming(256), 128, 1024, fs);
+[Px_ch2,~] = pwelch(sig_ch2, hamming(256), 128, 1024, fs);
+plot(Fb, 10*log10(Px_butt), 'r', 'DisplayName','Butterworth'); hold on;
+plot(Fb, 10*log10(Px_ch1), 'g', 'DisplayName','Chebyshev I');
+plot(Fb, 10*log10(Px_ch2), 'b', 'DisplayName','Chebyshev II');
+xlim([0 100]); xlabel('Frequency (Hz)'); ylabel('Power/Frequency (dB/Hz)');
+title('PSD Comparison (Welch)'); legend; grid on;
+
+
+
+% ---------------- Helper: autoscale for raw plot ----------------
+function rng = autoaxis(x)
+    mx = max(abs(x));
+    if mx == 0
+        rng = [-1 1];
+    else
+        rng = [-1.1*mx 1.1*mx];
+    end
+end
+
+
+% ============================================================
+%   Feature Extraction (Fixed for small values)
+% ============================================================
+
+emg_processed = processed;
+
+% Standard Deviation
+SD = std(emg_processed);
+
+% Root Mean Square
+RMS = sqrt(mean(emg_processed.^2));
+
+% Minimum and Maximum
+MinVal = min(emg_processed);
+MaxVal = max(emg_processed);
+
+% Zero Crossings
+ZC = sum(emg_processed(1:end-1).*emg_processed(2:end) < 0);
+
+% -------- Display Results --------
+fprintf('\n===== EMG Feature Extraction Results =====\n');
+fprintf('Standard Deviation : %.6f\n', SD);
+fprintf('Root Mean Square   : %.6f\n', RMS);
+fprintf('Minimum Value      : %.6f\n', MinVal);
+fprintf('Maximum Value      : %.6f\n', MaxVal);
+fprintf('Zero Crossings     : %d\n', ZC);
+fprintf('==========================================\n');
+
+
